@@ -115,7 +115,7 @@ with st.sidebar:
     st.header("Generation settings")
     mode = st.selectbox("Output mode", ["Both: Manual + Automation", "Manual test cases only", "Automation scripts only"])
     frameworks = st.multiselect("Automation frameworks", FRAMEWORKS, default=[FRAMEWORKS[0], FRAMEWORKS[1], FRAMEWORKS[2]])
-    case_count = st.slider("Baseline scenarios", min_value=6, max_value=14, value=12)
+    case_count = st.slider("Baseline scenarios", min_value=10, max_value=400, value=12)
     st.markdown("---")
     st.subheader("Optional AI enhancement")
     st.write("Add an OpenAI API key in your environment to enable a future LLM-backed generator. This MVP currently uses deterministic templates and does not send your requirements anywhere.")
@@ -173,7 +173,7 @@ if "cases" in st.session_state:
 else:
     st.markdown("### What you'll get")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Manual scenarios", "6–14")
+    c1.metric("Manual scenarios", "10–400")
     c2.metric("Frameworks", "4 supported")
     c3.metric("Excel sheets", "4")
     st.caption("Workbook tabs: Manual Test Cases, Automation Scenarios, Traceability, and Read Me.")
