@@ -42,15 +42,20 @@ def generate_cases(requirement, count=12):
         ("Audit and observability", "The system should log significant actions or failures", "Perform a successful action and a failed action; inspect approved logs/analytics.", "Relevant events contain the expected identifiers and outcome without exposing secrets.", "Logging", "P3"),
     ]
     cases = []
-    for i, (title, pre, steps, expected, typ, priority) in enumerate(templates[:count], 1):
+    for i in range(count):
+        title, pre, steps, expected, typ, priority = templates[i % len(templates)]
+        data_set = i // len(templates) + 1
+        if data_set > 1:
+            title = f"{title} - data set {data_set}"
+            steps = f"{steps}\n3. Repeat with a different approved test data/configuration set (set {data_set})."
         cases.append({
-            "Test Case ID": f"TC-{i:03d}", "Requirement Reference": "REQ-1 (user supplied requirement)",
+            "Test Case ID": f"TC-{i + 1:03d}", "Requirement Reference": "REQ-1 (user supplied requirement)",
             "Module": feature, "Test Scenario / Title": f"{feature}: {title}",
-            "Preconditions": pre, "Test Data": "Use valid/invalid values from the approved specification; exact values TBD if not provided.",
+            "Preconditions": pre, "Test Data": f"Use values from the approved specification; exact values TBD if not provided. Data set {data_set}.",
             "Steps": f"1. Review the requirement: {req_short}\n2. {steps}",
             "Expected Result": expected, "Priority": priority, "Test Type": typ,
             "Status": "Not Run", "Automation Feasibility": "Yes" if typ not in ("Usability", "Logging") else "Partial",
-            "Assumptions / Notes": "Generic baseline scenario. Confirm feature-specific rules and expected messages against the source requirement."
+            "Assumptions / Notes": "Generic baseline pattern. For additional data sets, provide distinct approved values or configurations. Confirm feature-specific rules and expected messages against the source requirement."
         })
     return cases
 
@@ -89,6 +94,7 @@ def make_workbook(cases, code_map, requirement):
         ["Generated at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
         ["Source requirement", requirement],
         ["Important", "Generated scenarios are a starting point. Verify business rules and expected results before execution."],
+        ["Scenario count", "The generator has 14 generic baseline patterns. Cases beyond those patterns reuse them with separate approved data/configuration sets."],
         ["Automation", "Automation Scenarios lists linked candidates. Source templates are provided in the app; replace placeholders before running."],
         ["Status", "All test cases default to Not Run. No tests have been executed by this workbook generator."],
     ]
@@ -115,7 +121,7 @@ with st.sidebar:
     st.header("Generation settings")
     mode = st.selectbox("Output mode", ["Both: Manual + Automation", "Manual test cases only", "Automation scripts only"])
     frameworks = st.multiselect("Automation frameworks", FRAMEWORKS, default=[FRAMEWORKS[0], FRAMEWORKS[1], FRAMEWORKS[2]])
-    case_count = st.slider("Baseline scenarios", min_value=10, max_value=400, value=12)
+    case_count = st.slider("Baseline scenarios", min_value=10, max_value=400, value=20)
     st.markdown("---")
     st.subheader("Optional AI enhancement")
     st.write("Add an OpenAI API key in your environment to enable a future LLM-backed generator. This MVP currently uses deterministic templates and does not send your requirements anywhere.")
@@ -125,10 +131,17 @@ example = "As an admin, I can search for an account, open its reports, select a 
 requirement = st.text_area("Paste a BRD, user story, acceptance criteria, API requirement, or bug description", value=example, height=190, placeholder="Describe the feature, business rules, validations, and expected behavior...")
 col1, col2 = st.columns([1, 1])
 with col1:
-    uploaded = st.file_uploader("Or upload a text-based requirement (.txt, .md, .pdf, .docx, .xlsx, .csv)", type=["txt", "md" ,"pdf", "docx","excel","csv"], help="The file will be read as UTF-8 text; if it cannot be read, paste the requirement above instead.")
-    if uploaded is not None: 
-        try: requirement = uploaded.read().decode("utf-8")
-        except Exception: st.error("Could not read this file as UTF-8 text.")
+    uploaded = st.file_uploader(
+        "Or upload a text-based requirement (.txt, .md)",
+        type=["txt", "md"],
+        help="Files must be UTF-8 encoded. If a file cannot be read, paste the requirement above instead.",
+    )
+    if uploaded is not None:
+        try:
+            requirement = uploaded.getvalue().decode("utf-8")
+        except UnicodeDecodeError:
+            requirement = ""
+            st.error("Could not read this file as UTF-8 text. Save it as UTF-8 or paste the requirement above.")
 with col2:
     st.info("Tip: Include acceptance criteria, field rules, API examples, user roles, and expected error messages for more precise tests.")
 
@@ -167,7 +180,7 @@ if "cases" in st.session_state:
     with tab3:
         st.markdown("**Coverage generated:** positive flow, required fields, invalid input, boundaries, null/empty data, duplicate submission, error recovery, authorization, persistence, usability, session timeout, regression, concurrency, and audit/logging.")
         st.markdown("**Important limitations**")
-        st.markdown("- This first version uses generic templates; it does not semantically understand every requirement yet.\n- Replace all placeholder URLs, selectors, payloads, expected status codes, and assertions.\n- The code has not been executed against your application.\n- Add exact acceptance criteria to improve the expected results; do not treat generic assumptions as approved requirements.")
+        st.markdown("- This first version uses 14 generic baseline patterns; additional requested cases repeat those patterns with separate data/configuration sets rather than adding new requirement-specific scenarios.\n- Replace all placeholder URLs, selectors, payloads, expected status codes, and assertions.\n- The code has not been executed against your application.\n- Add exact acceptance criteria to improve the expected results; do not treat generic assumptions as approved requirements.")
     workbook = make_workbook(cases, code_map, st.session_state["requirement"])
     st.download_button("📥 Download Excel workbook (.xlsx)", workbook, "qa_test_case_generator.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
 else:
