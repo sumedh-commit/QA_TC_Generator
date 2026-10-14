@@ -125,8 +125,8 @@ example = "As an admin, I can search for an account, open its reports, select a 
 requirement = st.text_area("Paste a BRD, user story, acceptance criteria, API requirement, or bug description", value=example, height=190, placeholder="Describe the feature, business rules, validations, and expected behavior...")
 col1, col2 = st.columns([1, 1])
 with col1:
-    uploaded = st.file_uploader("Or upload a text-based requirement (.txt, .md)", type=["txt", "md"])
-    if uploaded is not None:
+    uploaded = st.file_uploader("Or upload a text-based requirement (.txt, .md, .pdf, .docx, .xlsx, .csv)", type=["txt", "md" ,"pdf", "docx","excel","csv"], help="The file will be read as UTF-8 text; if it cannot be read, paste the requirement above instead.")
+    if uploaded is not None: 
         try: requirement = uploaded.read().decode("utf-8")
         except Exception: st.error("Could not read this file as UTF-8 text.")
 with col2:
