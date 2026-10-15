@@ -8,6 +8,8 @@ from openpyxl.utils import get_column_letter
 st.set_page_config(page_title="QA Test Case Generator", page_icon="🧪", layout="wide")
 
 FRAMEWORKS = ["Selenium + Java + TestNG", "Playwright + TypeScript", "REST Assured + Java", "Postman Collection"]
+QWEN_MODEL = "Qwen/Qwen3.5-4B"
+AI_BATCH_SIZE = 10
 
 
 def clean_title(text):
@@ -57,6 +59,89 @@ def generate_cases(requirement, count=12):
             "Status": "Not Run", "Automation Feasibility": "Yes" if typ not in ("Usability", "Logging") else "Partial",
             "Assumptions / Notes": "Generic baseline pattern. For additional data sets, provide distinct approved values or configurations. Confirm feature-specific rules and expected messages against the source requirement."
         })
+    return cases
+
+
+@st.cache_resource(show_spinner=False)
+def load_qwen_pipeline():
+    from transformers import pipeline
+
+    return pipeline(
+        "image-text-to-text",
+        model=QWEN_MODEL,
+        device_map="auto",
+        model_kwargs={"torch_dtype": "auto"},
+    )
+
+
+def generate_qwen_cases(requirement, count, progress_bar=None):
+    generator = load_qwen_pipeline()
+    feature = infer_feature(requirement)
+    cases = []
+
+    for offset in range(0, count, AI_BATCH_SIZE):
+        batch_count = min(AI_BATCH_SIZE, count - offset)
+        prompt = f"""Create exactly {batch_count} distinct manual QA test cases for the requirement below.
+Return only a valid JSON array. Do not wrap it in Markdown or add commentary.
+Every object must contain these string fields:
+scenario, preconditions, test_data, steps, expected_result, priority, test_type, automation_feasibility, notes.
+Use newline-separated numbered steps. priority must be P1, P2, or P3.
+automation_feasibility must be Yes, Partial, or No.
+Keep tests grounded in the supplied requirement. If a detail is unspecified, identify it as an assumption instead of inventing a business rule.
+
+Requirement:
+{requirement}
+"""
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        output = generator(text=messages, max_new_tokens=4096, return_full_text=False)
+        generated_text = output[0]["generated_text"]
+        if not isinstance(generated_text, str):
+            raise ValueError("Qwen returned an unexpected response format.")
+
+        json_match = re.search(r"\[[\s\S]*\]", generated_text)
+        if json_match is None:
+            raise ValueError("Qwen did not return a JSON array of test cases.")
+        batch = json.loads(json_match.group())
+        if not isinstance(batch, list) or len(batch) != batch_count:
+            raise ValueError(
+                f"Qwen returned {len(batch) if isinstance(batch, list) else 'an invalid number of'} "
+                f"cases; expected {batch_count}. Try generating again."
+            )
+
+        required_fields = (
+            "scenario", "preconditions", "test_data", "steps", "expected_result",
+            "priority", "test_type", "automation_feasibility", "notes",
+        )
+        for index, item in enumerate(batch, start=offset + 1):
+            if not isinstance(item, dict) or any(
+                not isinstance(item.get(field), str) or not item[field].strip()
+                for field in required_fields
+            ):
+                raise ValueError(f"Qwen returned an incomplete test case at position {index}.")
+            if item["priority"] not in {"P1", "P2", "P3"}:
+                raise ValueError(f"Qwen returned an invalid priority at position {index}.")
+            if item["automation_feasibility"] not in {"Yes", "Partial", "No"}:
+                raise ValueError(f"Qwen returned an invalid automation feasibility at position {index}.")
+
+            cases.append({
+                "Test Case ID": f"TC-{index:03d}",
+                "Requirement Reference": "REQ-1 (user supplied requirement)",
+                "Module": feature,
+                "Test Scenario / Title": f"{feature}: {item['scenario'].strip()}",
+                "Preconditions": item["preconditions"].strip(),
+                "Test Data": item["test_data"].strip(),
+                "Steps": item["steps"].strip(),
+                "Expected Result": item["expected_result"].strip(),
+                "Priority": item["priority"],
+                "Test Type": item["test_type"].strip(),
+                "Status": "Not Run",
+                "Automation Feasibility": item["automation_feasibility"],
+                "Assumptions / Notes": item["notes"].strip(),
+            })
+
+        if progress_bar is not None:
+            progress_bar.progress((offset + batch_count) / count)
+
     return cases
 
 
@@ -119,13 +204,16 @@ st.caption("Generate manual test cases, automation starter scripts, and an Excel
 
 with st.sidebar:
     st.header("Generation settings")
+    generation_engine = st.selectbox(
+        "Generation engine",
+        ["Local Qwen3.5-4B", "Offline templates"],
+        help="Qwen runs locally on this app host and does not require an API key.",
+    )
     mode = st.selectbox("Output mode", ["Both: Manual + Automation", "Manual test cases only", "Automation scripts only"])
     frameworks = st.multiselect("Automation frameworks", FRAMEWORKS, default=[FRAMEWORKS[0], FRAMEWORKS[1], FRAMEWORKS[2]])
     case_count = st.slider("Baseline scenarios", min_value=10, max_value=400, value=20)
     st.markdown("---")
-    st.subheader("Optional AI enhancement")
-    st.write("Add an OpenAI API key in your environment to enable a future LLM-backed generator. This MVP currently uses deterministic templates and does not send your requirements anywhere.")
-    st.caption("Offline template mode is active.")
+    st.caption("The first Qwen run downloads several gigabytes of model weights. Inference needs substantial RAM or GPU memory; download and generation time depend on the host.")
 
 example = "As an admin, I can search for an account, open its reports, select a date range and channel, and view the filtered report results. Invalid dates should show validation, and users without report permission must not access the page."
 requirement = st.text_area("Paste a BRD, user story, acceptance criteria, API requirement, or bug description", value=example, height=190, placeholder="Describe the feature, business rules, validations, and expected behavior...")
@@ -149,13 +237,24 @@ if st.button("Generate QA Deliverables", type="primary", use_container_width=Tru
     if not requirement.strip():
         st.error("Enter a requirement or upload a text file first.")
     else:
-        cases = generate_cases(requirement, case_count)
-        selected_frameworks = frameworks if mode != "Manual test cases only" else []
-        code_map = {fw: automation_code(fw, requirement, cases) for fw in selected_frameworks}
-        st.session_state["cases"] = cases
-        st.session_state["code_map"] = code_map
-        st.session_state["requirement"] = requirement
-        st.session_state["mode"] = mode
+        st.session_state.pop("cases", None)
+        st.session_state.pop("code_map", None)
+        st.session_state.pop("requirement", None)
+        try:
+            if generation_engine == "Local Qwen3.5-4B":
+                progress = st.progress(0, text="Loading local Qwen model and generating test cases...")
+                cases = generate_qwen_cases(requirement, case_count, progress)
+                progress.empty()
+            else:
+                cases = generate_cases(requirement, case_count)
+            selected_frameworks = frameworks if mode != "Manual test cases only" else []
+            code_map = {fw: automation_code(fw, requirement, cases) for fw in selected_frameworks}
+            st.session_state["cases"] = cases
+            st.session_state["code_map"] = code_map
+            st.session_state["requirement"] = requirement
+            st.session_state["mode"] = mode
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            st.error(f"Could not generate cases with {generation_engine}: {exc}")
 
 if "cases" in st.session_state:
     cases = st.session_state["cases"]
@@ -180,7 +279,7 @@ if "cases" in st.session_state:
     with tab3:
         st.markdown("**Coverage generated:** positive flow, required fields, invalid input, boundaries, null/empty data, duplicate submission, error recovery, authorization, persistence, usability, session timeout, regression, concurrency, and audit/logging.")
         st.markdown("**Important limitations**")
-        st.markdown("- This first version uses 14 generic baseline patterns; additional requested cases repeat those patterns with separate data/configuration sets rather than adding new requirement-specific scenarios.\n- Replace all placeholder URLs, selectors, payloads, expected status codes, and assertions.\n- The code has not been executed against your application.\n- Add exact acceptance criteria to improve the expected results; do not treat generic assumptions as approved requirements.")
+        st.markdown("- Qwen-generated cases are model output and must be reviewed against the approved requirement. Offline template mode repeats 14 generic patterns for counts above 14.\n- Replace all placeholder URLs, selectors, payloads, expected status codes, and assertions.\n- The code has not been executed against your application.\n- Add exact acceptance criteria to improve the expected results; do not treat generic assumptions as approved requirements.")
     workbook = make_workbook(cases, code_map, st.session_state["requirement"])
     st.download_button("📥 Download Excel workbook (.xlsx)", workbook, "qa_test_case_generator.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary", use_container_width=True)
 else:
